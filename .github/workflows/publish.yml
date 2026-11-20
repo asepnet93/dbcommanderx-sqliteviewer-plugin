@@ -1,0 +1,124 @@
+name: Build & Publish VS Code Extension
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: Typecheck, Test & Package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      vsix_name: ${{ steps.meta.outputs.vsix_name }}
+      should_publish: ${{ steps.meta.outputs.should_publish }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript check
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Check version against Visual Studio Marketplace
+        id: meta
+        run: |
+          node - <<'EOF'
+          const fs = require("node:fs");
+          const { execSync } = require("node:child_process");
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const version = pkg.version;
+          const vsixName = `${pkg.name}-${version}.vsix`;
+
+          if (!fs.existsSync(vsixName)) {
+            throw new Error(`Expected packaged VSIX not found: ${vsixName}`);
+          }
+
+          let publishedVersions = [];
+          try {
+            const raw = execSync(
+              `npx --no-install vsce show ${pkg.publisher}.${pkg.name} --json`,
+              { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+            );
+            const info = JSON.parse(raw);
+            publishedVersions = (info.versions || []).map((v) => v.version);
+          } catch {
+            console.log("Could not fetch Marketplace versions; allowing publish step.");
+          }
+
+          const alreadyPublished = publishedVersions.includes(version);
+          const outFile = process.env.GITHUB_OUTPUT;
+          fs.appendFileSync(outFile, `version=${version}\n`);
+          fs.appendFileSync(outFile, `vsix_name=${vsixName}\n`);
+          fs.appendFileSync(outFile, `should_publish=${alreadyPublished ? "false" : "true"}\n`);
+          console.log(
+            `Local=${version}; Marketplace=[${publishedVersions.join(", ")}]; should_publish=${!alreadyPublished}`
+          );
+          EOF
+
+      - name: Upload VSIX build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-viewer-vsix-${{ steps.meta.outputs.version }}
+          path: ${{ steps.meta.outputs.vsix_name }}
+          retention-days: 30
+
+  publish:
+    name: Publish to VS Code Marketplace (OIDC)
+    needs: ci
+    if: github.event_name != 'pull_request' && needs.ci.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download tested VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sqlite-viewer-vsix-${{ needs.ci.outputs.version }}
+          path: .
+
+      - name: Publish to Visual Studio Marketplace via Trusted Publishing (OIDC)
+        run: |
+          npx --no-install vsce publish \
+            --oidc \
+            --no-dependencies \
+            --skip-duplicate \
+            --packagePath "${{ needs.ci.outputs.vsix_name }}"

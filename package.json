@@ -2,7 +2,7 @@
   "name": "dbcommanderx-sqlite-viewer",
   "displayName": "SQLite Viewer — DB CommanderX",
   "description": "Fast, offline, read-only SQLite viewer & SQL query inspector for .sqlite and .db files.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "rubrikpulsasoftware",
   "license": "MIT",
   "icon": "resources/icon.png",

@@ -8,6 +8,7 @@
     schemaFilter: document.getElementById("schema-filter"),
     schemaList: document.getElementById("schema-list"),
     sqlInput: document.getElementById("sql-input"),
+    btnAutoReload: document.getElementById("btn-auto-reload"),
     btnReload: document.getElementById("btn-reload"),
     btnFullIde: document.getElementById("btn-full-ide"),
     btnClearSql: document.getElementById("btn-clear-sql"),
@@ -18,6 +19,8 @@
     btnBannerDismiss: document.getElementById("btn-banner-dismiss"),
     tabs: Array.from(document.querySelectorAll(".tab")),
     presets: Array.from(document.querySelectorAll("[data-preset]")),
+    rowFilterWrap: document.getElementById("row-filter-wrap"),
+    rowFilter: document.getElementById("row-filter"),
     queryMeta: document.getElementById("query-meta"),
     btnExportCsv: document.getElementById("btn-export-csv"),
     btnExportJson: document.getElementById("btn-export-json"),
@@ -26,6 +29,17 @@
     gridHead: document.querySelector("#data-grid thead"),
     gridBody: document.querySelector("#data-grid tbody"),
     ddlView: document.getElementById("ddl-view"),
+    cellInspector: document.getElementById("cell-inspector"),
+    inspCol: document.getElementById("insp-col"),
+    inspRow: document.getElementById("insp-row"),
+    inspType: document.getElementById("insp-type"),
+    btnInspToggleJson: document.getElementById("btn-insp-toggle-json"),
+    btnInspSaveBlob: document.getElementById("btn-insp-save-blob"),
+    btnInspCopyCell: document.getElementById("btn-insp-copy-cell"),
+    btnInspCopyRow: document.getElementById("btn-insp-copy-row"),
+    btnInspClose: document.getElementById("btn-insp-close"),
+    inspImage: document.getElementById("insp-image"),
+    inspText: document.getElementById("insp-text"),
     paginationBar: document.getElementById("pagination-bar"),
     btnPrev: document.getElementById("btn-prev"),
     btnNext: document.getElementById("btn-next"),
@@ -34,15 +48,25 @@
 
   const state = {
     schema: [],
-    filterText: "",
+    schemaFilterText: "",
     selectedName: null,
     selectedObject: null,
     activeTab: "data",
     queryMode: "table",
     activeSql: "",
+    sortColumn: null,
+    sortDir: null,
+    rowFilterText: "",
     dataPaged: null,
     structure: null,
-    dbReady: false
+    dbReady: false,
+    autoReloadEnabled: true,
+    selectedCell: null,
+    inspected: null,
+    inspectedRowJson: "",
+    jsonPrettyMode: true,
+    toastTimer: null,
+    filterTimer: null
   };
 
   function quoteIdent(name) {
@@ -56,16 +80,88 @@
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
 
-  function showBanner(kind, message, showIdeButton) {
+  function updateAutoReloadButton() {
+    el.btnAutoReload.classList.toggle("active", state.autoReloadEnabled);
+    el.btnAutoReload.textContent = state.autoReloadEnabled
+      ? "Auto-Reload: On"
+      : "Auto-Reload: Off";
+  }
+
+  function showBanner(kind, message, showIdeButton, autoHideMs) {
+    if (state.toastTimer) {
+      clearTimeout(state.toastTimer);
+      state.toastTimer = null;
+    }
     el.statusBanner.className = `status-banner ${kind}`;
     el.statusText.textContent = message;
     el.btnBannerIde.classList.toggle("hidden", !showIdeButton);
+    if (autoHideMs && autoHideMs > 0) {
+      state.toastTimer = setTimeout(hideBanner, autoHideMs);
+    }
   }
 
   function hideBanner() {
+    if (state.toastTimer) {
+      clearTimeout(state.toastTimer);
+      state.toastTimer = null;
+    }
     el.statusBanner.className = "status-banner hidden";
     el.statusText.textContent = "";
     el.btnBannerIde.classList.add("hidden");
+  }
+
+  function closeInspector() {
+    state.selectedCell = null;
+    state.inspected = null;
+    state.inspectedRowJson = "";
+    el.cellInspector.classList.add("hidden");
+    const prevSelected = el.gridBody.querySelector("td.cell-selected");
+    if (prevSelected) {
+      prevSelected.classList.remove("cell-selected");
+    }
+  }
+
+  function renderInspector() {
+    const detail = state.inspected;
+    if (!detail) {
+      el.cellInspector.classList.add("hidden");
+      return;
+    }
+
+    el.cellInspector.classList.remove("hidden");
+    el.inspCol.textContent = detail.columnName;
+    el.inspRow.textContent = `Row ${detail.rowNumber}`;
+    el.inspType.textContent = detail.imageMime
+      ? `BLOB · ${detail.imageMime} (${formatBytes(detail.byteLength)})`
+      : detail.dataType === "blob"
+        ? `BLOB (${formatBytes(detail.byteLength)})`
+        : `${detail.dataType.toUpperCase()} (${formatBytes(detail.byteLength)})`;
+
+    const isJson = detail.dataType === "json" && Boolean(detail.prettyJson);
+    const isBlob = detail.dataType === "blob";
+
+    el.btnInspToggleJson.classList.toggle("hidden", !isJson);
+    el.btnInspToggleJson.textContent = state.jsonPrettyMode ? "Show Raw" : "Pretty JSON";
+    el.btnInspSaveBlob.classList.toggle("hidden", !isBlob);
+    el.btnInspCopyCell.disabled = detail.dataType === "null" && detail.textValue === null;
+
+    if (detail.imageDataUrl) {
+      el.inspImage.src = detail.imageDataUrl;
+      el.inspImage.classList.remove("hidden");
+    } else {
+      el.inspImage.removeAttribute("src");
+      el.inspImage.classList.add("hidden");
+    }
+
+    if (detail.dataType === "null") {
+      el.inspText.textContent = "NULL";
+    } else if (isBlob) {
+      el.inspText.textContent = detail.hexPreview || "";
+    } else if (isJson && state.jsonPrettyMode) {
+      el.inspText.textContent = detail.prettyJson;
+    } else {
+      el.inspText.textContent = detail.textValue ?? "";
+    }
   }
 
   function setActiveTab(tabName) {
@@ -73,12 +169,16 @@
     for (const tabBtn of el.tabs) {
       tabBtn.classList.toggle("active", tabBtn.dataset.tab === tabName);
     }
+    el.rowFilterWrap.classList.toggle("hidden", tabName !== "data");
+    if (tabName !== "data") {
+      closeInspector();
+    }
     renderActiveTab();
   }
 
   function renderSchemaList() {
     el.schemaList.textContent = "";
-    const term = state.filterText.trim().toLowerCase();
+    const term = state.schemaFilterText.trim().toLowerCase();
     const visible = state.schema.filter((item) =>
       !term ? true : item.name.toLowerCase().includes(term)
     );
@@ -121,6 +221,11 @@
       }
 
       btn.addEventListener("click", () => {
+        state.sortColumn = null;
+        state.sortDir = null;
+        state.rowFilterText = "";
+        el.rowFilter.value = "";
+        closeInspector();
         vscode.postMessage({ type: "selectObject", name: obj.name });
       });
 
@@ -129,7 +234,36 @@
     }
   }
 
-  function renderGrid(columns, rows, emptyMessage) {
+  function requestViewUpdate(pageNumber, updateSqlBox) {
+    if (!state.dbReady) return;
+    vscode.postMessage({
+      type: "queryView",
+      mode: state.queryMode,
+      targetName: state.selectedName,
+      sqlText: state.activeSql,
+      page: pageNumber,
+      sortColumn: state.sortColumn || "",
+      sortDir: state.sortDir || "",
+      filterText: state.rowFilterText,
+      updateSqlBox: Boolean(updateSqlBox)
+    });
+  }
+
+  function toggleSort(columnName) {
+    if (state.sortColumn !== columnName) {
+      state.sortColumn = columnName;
+      state.sortDir = "asc";
+    } else if (state.sortDir === "asc") {
+      state.sortDir = "desc";
+    } else {
+      state.sortColumn = null;
+      state.sortDir = null;
+    }
+    closeInspector();
+    requestViewUpdate(1, state.queryMode === "table");
+  }
+
+  function renderGrid(columns, rows, emptyMessage, interactiveDataGrid) {
     el.gridHead.textContent = "";
     el.gridBody.textContent = "";
     el.ddlView.classList.add("hidden");
@@ -144,7 +278,28 @@
     const headRow = document.createElement("tr");
     for (const col of columns) {
       const th = document.createElement("th");
-      th.textContent = col;
+      const inner = document.createElement("span");
+      inner.className = "th-inner";
+
+      const label = document.createElement("span");
+      label.textContent = col;
+      inner.appendChild(label);
+
+      if (interactiveDataGrid) {
+        th.classList.add("sortable");
+        const isSorted = state.sortColumn === col && state.sortDir;
+        if (isSorted) {
+          th.classList.add("sorted");
+          const ind = document.createElement("span");
+          ind.className = "sort-ind";
+          ind.textContent = state.sortDir === "asc" ? "▲" : "▼";
+          inner.appendChild(ind);
+        }
+        th.title = "Click to sort column";
+        th.addEventListener("click", () => toggleSort(col));
+      }
+
+      th.appendChild(inner);
       headRow.appendChild(th);
     }
     el.gridHead.appendChild(headRow);
@@ -160,10 +315,28 @@
     el.tableWrap.classList.remove("hidden");
 
     const fragment = document.createDocumentFragment();
-    for (const row of rows) {
+    rows.forEach((row, rowIdx) => {
       const tr = document.createElement("tr");
-      for (const cell of row) {
+      row.forEach((cell, colIdx) => {
         const td = document.createElement("td");
+        if (interactiveDataGrid) {
+          td.classList.add("clickable-cell");
+          if (
+            state.selectedCell &&
+            state.selectedCell.rowIndex === rowIdx &&
+            state.selectedCell.colIndex === colIdx
+          ) {
+            td.classList.add("cell-selected");
+          }
+          td.addEventListener("click", () => {
+            const prev = el.gridBody.querySelector("td.cell-selected");
+            if (prev) prev.classList.remove("cell-selected");
+            td.classList.add("cell-selected");
+            state.selectedCell = { rowIndex: rowIdx, colIndex: colIdx };
+            vscode.postMessage({ type: "inspectCell", rowIndex: rowIdx, colIndex: colIdx });
+          });
+        }
+
         if (cell && cell.kind === "null") {
           const span = document.createElement("span");
           span.className = "cell-null";
@@ -182,9 +355,9 @@
           }
         }
         tr.appendChild(td);
-      }
+      });
       fragment.appendChild(tr);
-    }
+    });
     el.gridBody.appendChild(fragment);
   }
 
@@ -214,7 +387,8 @@
       renderGrid(
         struct ? struct.columns : [],
         struct ? struct.rows : [],
-        "Select a table, view, or index to inspect its structure."
+        "Select a table, view, or index to inspect its structure.",
+        false
       );
       el.queryMeta.textContent =
         struct && struct.rows ? `${struct.rows.length} entries` : "";
@@ -224,13 +398,18 @@
     const paged = state.dataPaged;
     if (!paged) {
       el.paginationBar.classList.add("hidden");
-      renderGrid([], [], "Select a table from the sidebar or run a read-only SQL query.");
+      renderGrid([], [], "Select a table from the sidebar or run a read-only SQL query.", false);
       el.queryMeta.textContent = "";
       return;
     }
 
-    renderGrid(paged.columns, paged.rows, "Query returned 0 rows.");
-    el.queryMeta.textContent = `${paged.totalRows.toLocaleString()} rows · ${paged.execMs.toFixed(1)} ms`;
+    const emptyText = state.rowFilterText.trim()
+      ? `No rows match "${state.rowFilterText.trim()}".`
+      : "Query returned 0 rows.";
+    renderGrid(paged.columns, paged.rows, emptyText, true);
+
+    const filterSuffix = paged.filterText ? " (filtered)" : "";
+    el.queryMeta.textContent = `${paged.totalRows.toLocaleString()} rows${filterSuffix} · ${paged.execMs.toFixed(1)} ms`;
 
     const showPaging = paged.totalPages > 1;
     el.paginationBar.classList.toggle("hidden", !showPaging);
@@ -249,6 +428,11 @@
   function runCurrentSql() {
     if (!state.dbReady) return;
     hideBanner();
+    closeInspector();
+    state.sortColumn = null;
+    state.sortDir = null;
+    state.rowFilterText = "";
+    el.rowFilter.value = "";
     const sqlText = el.sqlInput.value;
     state.queryMode = "sql";
     state.activeSql = sqlText;
@@ -274,12 +458,31 @@
   }
 
   el.schemaFilter.addEventListener("input", () => {
-    state.filterText = el.schemaFilter.value;
+    state.schemaFilterText = el.schemaFilter.value;
     renderSchemaList();
+  });
+
+  el.rowFilter.addEventListener("input", () => {
+    if (state.filterTimer) {
+      clearTimeout(state.filterTimer);
+    }
+    state.filterTimer = setTimeout(() => {
+      state.filterTimer = null;
+      state.rowFilterText = el.rowFilter.value;
+      closeInspector();
+      requestViewUpdate(1, state.queryMode === "table");
+    }, 200);
+  });
+
+  el.btnAutoReload.addEventListener("click", () => {
+    state.autoReloadEnabled = !state.autoReloadEnabled;
+    updateAutoReloadButton();
+    vscode.postMessage({ type: "setAutoReload", enabled: state.autoReloadEnabled });
   });
 
   el.btnReload.addEventListener("click", () => {
     hideBanner();
+    closeInspector();
     vscode.postMessage({ type: "reload" });
   });
 
@@ -317,24 +520,14 @@
 
   el.btnPrev.addEventListener("click", () => {
     if (!state.dataPaged || state.dataPaged.page <= 1) return;
-    vscode.postMessage({
-      type: "paginate",
-      mode: state.queryMode,
-      targetName: state.selectedName,
-      sqlText: state.activeSql,
-      page: state.dataPaged.page - 1
-    });
+    closeInspector();
+    requestViewUpdate(state.dataPaged.page - 1, false);
   });
 
   el.btnNext.addEventListener("click", () => {
     if (!state.dataPaged || state.dataPaged.page >= state.dataPaged.totalPages) return;
-    vscode.postMessage({
-      type: "paginate",
-      mode: state.queryMode,
-      targetName: state.selectedName,
-      sqlText: state.activeSql,
-      page: state.dataPaged.page + 1
-    });
+    closeInspector();
+    requestViewUpdate(state.dataPaged.page + 1, false);
   });
 
   el.btnExportCsv.addEventListener("click", () => {
@@ -345,6 +538,44 @@
     vscode.postMessage({ type: "export", format: "json" });
   });
 
+  el.btnInspClose.addEventListener("click", closeInspector);
+
+  el.btnInspToggleJson.addEventListener("click", () => {
+    state.jsonPrettyMode = !state.jsonPrettyMode;
+    renderInspector();
+  });
+
+  el.btnInspCopyCell.addEventListener("click", () => {
+    if (!state.inspected) return;
+    const rawText =
+      state.inspected.dataType === "null"
+        ? "NULL"
+        : state.inspected.dataType === "blob"
+          ? state.inspected.hexPreview || ""
+          : state.inspected.prettyJson && state.jsonPrettyMode
+            ? state.inspected.prettyJson
+            : state.inspected.textValue ?? "";
+    vscode.postMessage({ type: "copyText", text: rawText, label: "Cell value copied" });
+  });
+
+  el.btnInspCopyRow.addEventListener("click", () => {
+    if (!state.inspectedRowJson) return;
+    vscode.postMessage({
+      type: "copyText",
+      text: state.inspectedRowJson,
+      label: "Row JSON copied"
+    });
+  });
+
+  el.btnInspSaveBlob.addEventListener("click", () => {
+    if (!state.selectedCell) return;
+    vscode.postMessage({
+      type: "saveBlob",
+      rowIndex: state.selectedCell.rowIndex,
+      colIndex: state.selectedCell.colIndex
+    });
+  });
+
   window.addEventListener("message", (event) => {
     const msg = event.data;
     if (!msg || typeof msg.type !== "string") return;
@@ -353,16 +584,22 @@
       case "init": {
         state.dbReady = true;
         state.schema = Array.isArray(msg.schema) ? msg.schema : [];
-        state.selectedName = null;
-        state.selectedObject = null;
-        state.dataPaged = null;
-        state.structure = null;
+        if (typeof msg.autoReloadEnabled === "boolean") {
+          state.autoReloadEnabled = msg.autoReloadEnabled;
+          updateAutoReloadButton();
+        }
         el.dbName.textContent = msg.fileName || "SQLite Database";
         const tablesCount = state.schema.filter((s) => s.type === "table").length;
         const viewsCount = state.schema.filter((s) => s.type === "view").length;
         el.dbStats.textContent = `${tablesCount} tables · ${viewsCount} views · ${formatBytes(msg.fileSizeBytes)}`;
         el.btnRunSql.disabled = false;
-        hideBanner();
+        if (msg.reason === "init") {
+          state.selectedName = null;
+          state.selectedObject = null;
+          state.dataPaged = null;
+          state.structure = null;
+          hideBanner();
+        }
         renderSchemaList();
         renderActiveTab();
         updateExportButtons();
@@ -373,6 +610,7 @@
         state.dbReady = false;
         state.schema = [];
         state.dataPaged = null;
+        closeInspector();
         el.dbName.textContent = msg.fileName || "SQLite Database";
         el.dbStats.textContent = formatBytes(msg.fileSizeBytes);
         el.btnRunSql.disabled = true;
@@ -388,34 +626,42 @@
         break;
       }
 
-      case "objectLoaded": {
-        hideBanner();
-        state.selectedObject = msg.object || null;
-        state.selectedName = msg.object ? msg.object.name : null;
-        state.structure = msg.structure || null;
+      case "viewData": {
+        state.queryMode = msg.mode === "sql" ? "sql" : "table";
+        if (msg.object) {
+          state.selectedObject = msg.object;
+          state.selectedName = msg.object.name;
+        }
+        if (msg.structure) {
+          state.structure = msg.structure;
+        }
         state.dataPaged = msg.paged || null;
-        state.queryMode = "table";
-        if (msg.sql) {
+        state.sortColumn = msg.paged?.sortColumn || null;
+        state.sortDir = msg.paged?.sortDir || null;
+        state.rowFilterText = msg.paged?.filterText || "";
+        if (el.rowFilter.value !== state.rowFilterText) {
+          el.rowFilter.value = state.rowFilterText;
+        }
+        if (msg.updateSqlBox && typeof msg.sql === "string" && msg.sql.length > 0) {
           el.sqlInput.value = msg.sql;
         }
         renderSchemaList();
-        setActiveTab(msg.defaultTab || "data");
+        if (msg.defaultTab) {
+          setActiveTab(msg.defaultTab);
+        } else if (msg.mode === "sql") {
+          setActiveTab("data");
+        } else {
+          renderActiveTab();
+        }
         updateExportButtons();
         break;
       }
 
-      case "sqlResult": {
-        hideBanner();
-        state.dataPaged = msg.paged || null;
-        setActiveTab("data");
-        updateExportButtons();
-        break;
-      }
-
-      case "pageLoaded": {
-        state.dataPaged = msg.paged || null;
-        setActiveTab("data");
-        updateExportButtons();
+      case "cellInspected": {
+        state.inspected = msg.detail || null;
+        state.inspectedRowJson = msg.rowJson || "";
+        state.jsonPrettyMode = true;
+        renderInspector();
         break;
       }
 
@@ -425,8 +671,8 @@
         break;
       }
 
-      case "exportDone": {
-        showBanner("info", msg.message || "Export completed.", false);
+      case "toast": {
+        showBanner("info", msg.message || "Done.", false, 3000);
         break;
       }
     }

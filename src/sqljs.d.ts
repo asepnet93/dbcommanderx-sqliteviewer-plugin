@@ -1,5 +1,6 @@
 declare module "sql.js" {
   export type SqlValue = number | string | Uint8Array | null;
+  export type BindParams = SqlValue[] | Record<string, SqlValue>;
 
   export interface QueryExecResult {
     columns: string[];
@@ -7,13 +8,13 @@ declare module "sql.js" {
   }
 
   export interface Statement {
-    run(values?: SqlValue[] | Record<string, SqlValue>): void;
+    run(values?: BindParams): void;
     free(): boolean;
   }
 
   export interface Database {
-    exec(sql: string): QueryExecResult[];
-    run(sql: string, params?: SqlValue[] | Record<string, SqlValue>): Database;
+    exec(sql: string, params?: BindParams): QueryExecResult[];
+    run(sql: string, params?: BindParams): Database;
     prepare(sql: string): Statement;
     export(): Uint8Array;
     close(): void;

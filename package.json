@@ -1,0 +1,92 @@
+{
+  "name": "dbcommanderx-sqlite-viewer",
+  "displayName": "SQLite Viewer — DB CommanderX",
+  "description": "Fast, offline, read-only SQLite viewer & SQL query inspector for .sqlite and .db files.",
+  "version": "1.0.0",
+  "publisher": "rubrikpulsasoftware",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "homepage": "https://dbcx.rubrikpulsa.com/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/asepnet93/dbcommanderx-sqliteviewer-plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/asepnet93/dbcommanderx-sqliteviewer-plugin/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "sqlite",
+    "sqlite3",
+    "db",
+    "database",
+    "viewer",
+    "sql",
+    "dbcommanderx",
+    "wasm"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "dbcommanderx.sqliteViewer",
+        "displayName": "SQLite Viewer (DB CommanderX)",
+        "selector": [
+          {
+            "filenamePattern": "*.sqlite"
+          },
+          {
+            "filenamePattern": "*.sqlite3"
+          },
+          {
+            "filenamePattern": "*.db"
+          },
+          {
+            "filenamePattern": "*.db3"
+          },
+          {
+            "filenamePattern": "*.s3db"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "dbcommanderx.openSqliteFile",
+        "title": "SQLite Viewer: Open File...",
+        "category": "DB CommanderX"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "dbcommanderx.openSqliteFile",
+          "when": "resourceExtname =~ /^\\.(sqlite|sqlite3|db|db3|s3db)$/i",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node --test test/extension.test.mjs",
+    "package": "npm run build && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.2",
+    "sql.js": "^1.13.0",
+    "typescript": "^5.7.2"
+  }
+}
